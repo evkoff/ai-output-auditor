@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Streamlit / Gradio
+.streamlit/secrets.toml
+flagged/
+gradio_cached_examples/
+
+# macOS
+.DS_Store
+
+# Local-only project materials (bootcamp docs, planning notes)
+data/*.pdf
+docs/*.md

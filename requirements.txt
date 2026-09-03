@@ -1,0 +1,18 @@
+# Detector 1 — embeddings
+sentence-transformers
+
+# Detector 2 — HHEM entailment
+torch>=2.8.0
+transformers<5
+
+# Detector 3 — LLM judge
+groq
+python-dotenv
+
+# UI
+gradio>=4.44
+
+# Data, metrics, charts
+pandas
+scikit-learn
+matplotlib

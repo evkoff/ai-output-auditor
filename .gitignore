@@ -27,4 +27,7 @@ gradio_cached_examples/
 
 # Local-only project materials (bootcamp docs, planning notes)
 data/*.pdf
+data/*.json
 docs/*.md
+CLAUDE.md
+CLAUDE.local.md

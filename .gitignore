@@ -26,7 +26,7 @@ gradio_cached_examples/
 .DS_Store
 
 # Local-only project materials (bootcamp docs, planning notes)
-data/*.pdf
+reference/
 data/*.json
 docs/*.md
 CLAUDE.md

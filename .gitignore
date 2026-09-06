@@ -31,3 +31,4 @@ data/*.json
 docs/*.md
 CLAUDE.md
 CLAUDE.local.md
+cache/

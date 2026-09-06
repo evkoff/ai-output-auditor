@@ -100,31 +100,6 @@ def to_test_cases(
 
 
 
-def build_splits(
-    dev_records: int = 20,
-    test_records: int = 75,
-) -> tuple[list[TestCase], list[TestCase]]:
-    """Build dev and test splits, taking the same record counts from each subset.
-
-    Splits by record, not by test case: the two cases from one record share a
-    source text, so a case-level split would leak that text across the splits.
-    """
-    dev: list[TestCase] = []
-    test: list[TestCase] = []
-
-    for subset in SUBSETS:
-        records = load_records(subset, limit=dev_records + test_records)
-
-        dev.extend(
-            to_test_cases(subset, records[:dev_records], start_index=0)
-        )
-        test.extend(
-            to_test_cases(subset, records[dev_records:], start_index=dev_records)
-        )
-
-    return dev, test
-
-
 
 def build_splits(
     dev_records: int = 20,
@@ -149,12 +124,6 @@ def build_splits(
         )
 
     return dev, test
-
-
-
-
-
-
 
 
 

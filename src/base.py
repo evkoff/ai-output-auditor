@@ -19,6 +19,18 @@ class DetectorResult:
     latency_ms: float      # every detector must measure this — no default on purpose
     explanation: str = ""  # only detector 3 fills this in
     tokens_used: int = 0   # stays 0 for the two local detectors
+    # Judge only: "contradicted" when the source states something otherwise,
+    # "not_mentioned" when the source is simply silent. Empty for the local
+    # detectors and whenever the verdict is grounded.
+    #
+    unsupported_kind: str = ""
+     # Deliberately does NOT affect the verdict — both kinds count as
+        # hallucinated, because someone asking "did it make this up?" is no better
+        # off by the fact that the source simply didn't mention it. The field exists
+        # for the failure analysis, where the difference is the whole point: an
+        # answer that is true but unsupported looks exactly like "not_mentioned",
+        # and HaluEval labels such answers as correct.
+
 
 
 class Detector(Protocol):

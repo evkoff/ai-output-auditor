@@ -15,6 +15,7 @@ import os        # reads GROQ_API_KEY out of the environment
 import time      # latency measurement, same as the other two detectors
 
 from dotenv import load_dotenv  # functiona from python_dotenv library, reads .env into the environment
+from gradio.monitoring_dashboard import data
 from groq import Groq
 
 from src.base import DetectorResult
@@ -42,10 +43,12 @@ Rules:
 - "hallucinated": the answer contains at least one claim the source does not
   support. A claim the source simply does not mention counts as hallucinated,
   not only a claim the source contradicts.
+When the verdict is "hallucinated", also say which kind it is:
+- "contradicted": the source states something incompatible with the claim.
+- "not_mentioned": the source neither confirms nor denies the claim.
 
 Reply with JSON only, no other text, in exactly this shape:
-{"verdict": "grounded" or "hallucinated", "unsupported": "the specific unsupported claim, or an empty string when grounded"}"""
-
+{"verdict": "grounded" or "hallucinated", "unsupported": "the specific unsupported claim, or an empty string when grounded", "kind": "contradicted" or "not_mentioned" or ""}"""
 
 def _build_user_message(case: TestCase) -> str:
     """Assemble the text the judge reads.
@@ -69,8 +72,8 @@ def _build_user_message(case: TestCase) -> str:
     return "\n\n".join(parts)
 
 
-def _parse(raw: str) -> tuple[str, str]:
-    """Pull verdict and explanation out of the model's reply."""
+def _parse(raw: str) -> tuple[str, str, str]:
+    """Pull verdict, explanation and kind out of the model's reply."""
     # Written defensively rather than calling json.loads(raw) directly: a model
     # asked for JSON still sometimes wraps it in markdown fences or adds a
     # sentence around it. Taking everything between the outermost braces
@@ -99,7 +102,17 @@ def _parse(raw: str) -> tuple[str, str]:
     # distinguishes an empty string from a missing value in the message.
 
     # Empty string when grounded: there is no unsupported claim to name.
-    return verdict, data.get("unsupported", "")
+    kind = data.get("kind", "")
+    # Validated more loosely than the verdict on purpose: this field is
+    # auxiliary, so an unexpected value should not abort a run that costs
+    # quota. Anything unrecognised becomes empty rather than polluting the
+    # analysis with a category the prompt never defined.
+    if kind not in ("contradicted", "not_mentioned"):
+        kind = ""
+    # The JSON calls this "unsupported" because that tells the model exactly
+    # what to put there; DetectorResult calls it "explanation" because that
+    # slot is common to all detectors. Same value, two names.
+    return verdict, data.get("unsupported", ""), data.get("kind", "")
 
 
 class LLMJudgeDetector:
@@ -110,7 +123,9 @@ class LLMJudgeDetector:
     # cache key, so without a bump the store would serve verdicts produced by
     # the old prompt under the new one — meaning a prompt edit has no effect
     # at all, silently.
-    version = "v1"
+    # v2: added the "kind" field to the prompt. The bump matters — without it
+    # the store would serve v1 verdicts, which carry no kind at all.
+    version = "v2"
 
     def __init__(self):
         # Reads .env into the process environment. Cheap enough to do here,
@@ -155,16 +170,18 @@ class LLMJudgeDetector:
         if content is None:
             raise ValueError("judge returned no content")
 
-        verdict, explanation = _parse(content)
+        verdict, explanation, kind = _parse(content)
 
         return DetectorResult(
             verdict=verdict,
             # The judge rules, it does not measure — there is no natural score
             # to report, so it is derived from the verdict. This is precisely
             # why this detector has no tunable threshold, unlike the other two.
+            
             score=1.0 if verdict == "grounded" else 0.0,
             latency_ms=latency_ms,
             explanation=explanation,
+            unsupported_kind=kind,
             # Includes the hidden reasoning tokens: check_groq.py showed 38 of
             # them spent on a one-word answer, so real calls carry that on top
             # of the visible reply.
@@ -182,6 +199,8 @@ if __name__ == "__main__":
 
     detector = LLMJudgeDetector()
 
+    
+
     # Three QA cases is enough to see the pattern without waiting.
     for case in dev[:3]:
         result = detector.check(case)
@@ -189,5 +208,7 @@ if __name__ == "__main__":
         print(f"  expected: {case.label}")
         print(f"  verdict:  {result.verdict}")
         print(f"  says:     {result.explanation[:100]}")
+        print(f"  kind:     {result.unsupported_kind or '—'}")
         print(f"  tokens:   {result.tokens_used}, {result.latency_ms:.0f} ms")
         print()
+        

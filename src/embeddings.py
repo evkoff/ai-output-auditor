@@ -27,13 +27,19 @@ class EmbeddingDetector:
     # Required by the Detector protocol in base.py. `version` becomes part of
     # the cache key, so bumping it invalidates previously cached results.
     name = "embeddings"
-    version = "v1"
 
     def __init__(self, threshold: float = 0.5):
         # PLACEHOLDER value. The real threshold is tuned on the dev split;
         # 0.5 is here only so the detector runs before that happens, and no
         # result produced with it means anything.
         self.threshold = threshold
+
+        # The threshold is part of this detector's identity: the same scores
+        # with a different threshold produce different verdicts, so results
+        # cached under one must never be served under another. Building it
+        # into the version makes that automatic instead of depending on
+        # remembering to bump a number by hand.
+        self.version = f"v1-t{threshold}"
 
         # Loading reads ~90 MB and takes seconds, so it happens once per
         # detector instance — never inside check(), which runs 380 times.

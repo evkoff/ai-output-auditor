@@ -28,11 +28,17 @@ class EntailmentDetector:
     # Required by the Detector protocol. Bumping `version` invalidates the
     # cache, though only detector 3 actually spends anything on a re-run.
     name = "entailment"
-    version = "v1"
 
     def __init__(self, threshold: float = 0.5):
         # PLACEHOLDER, same as detector 1 — the real value is tuned on dev.
         self.threshold = threshold
+
+        # The threshold is part of this detector's identity: the same scores
+        # with a different threshold produce different verdicts, so results
+        # cached under one must never be served under another. Building it
+        # into the version makes that automatic instead of depending on
+        # remembering to bump a number by hand.
+        self.version = f"v1-t{threshold}"
 
         # trust_remote_code=True permits the model to run Python it brings
         # with it, which is how it provides the .predict() method below.

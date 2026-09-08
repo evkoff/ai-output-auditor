@@ -1,6 +1,6 @@
 # check_groq.py — verify the API key works and the model answers
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv # reads .env into the environment
 
 load_dotenv()
 api_key = os.environ["GROQ_API_KEY"]

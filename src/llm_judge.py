@@ -15,7 +15,6 @@ import os        # reads GROQ_API_KEY out of the environment
 import time      # latency measurement, same as the other two detectors
 
 from dotenv import load_dotenv  # functiona from python_dotenv library, reads .env into the environment
-from gradio.monitoring_dashboard import data
 from groq import Groq
 
 from src.base import DetectorResult

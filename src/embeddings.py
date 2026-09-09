@@ -43,7 +43,15 @@ class EmbeddingDetector:
 
         # Loading reads ~90 MB and takes seconds, so it happens once per
         # detector instance — never inside check(), which runs 380 times.
-        self.model = SentenceTransformer(MODEL_NAME)
+        # Pinned to CPU rather than letting the library choose. On a laptop it
+        # picks Apple's MPS; on a ZeroGPU Space it sees CUDA and moves there —
+        # but ZeroGPU only grants the GPU inside a @spaces.GPU function, and
+        # outside one this model silently returned zero vectors: a cosine of
+        # 0.0000 between two identical sentences, reported as a confident
+        # "hallucinated". CPU is also the honest setting for the comparison,
+        # since the premise is that these two models run free on ordinary
+        # hardware. Verified: the score is identical on MPS and CPU.
+        self.model = SentenceTransformer(MODEL_NAME, device="cpu")
 
     def check(self, case: TestCase) -> DetectorResult:
         # perf_counter rather than time(): it only moves forward, so a system

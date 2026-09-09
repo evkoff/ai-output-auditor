@@ -24,6 +24,11 @@ from src.halueval import TestCase
 # hypothetical: Llama 3.3 was retired from Groq's free tier mid-project and
 # had to be swapped out for this one.
 MODEL_NAME = "openai/gpt-oss-120b"
+# Groq's free tier caps tokens per minute as well as per day, and during a run
+# it is the per-minute limit that binds. Exceeding it returns 429, which the
+# harness records as a failed case and skips — a run full of holes that still
+# reports success.
+TOKENS_PER_MINUTE = 8_000
 
 # Two things this prompt has to get right:
 #
@@ -42,6 +47,10 @@ Rules:
 - "hallucinated": the answer contains at least one claim the source does not
   support. A claim the source simply does not mention counts as hallucinated,
   not only a claim the source contradicts.
+- A claim is supported when it follows from the source, even if the source does
+  not say it in those words. Combining facts the source states, or restating
+  them differently, is supported; introducing a fact found nowhere in the
+  source is not.
 When the verdict is "hallucinated", also say which kind it is:
 - "contradicted": the source states something incompatible with the claim.
 - "not_mentioned": the source neither confirms nor denies the claim.
@@ -101,7 +110,7 @@ def _parse(raw: str) -> tuple[str, str, str]:
     # distinguishes an empty string from a missing value in the message.
 
     # Empty string when grounded: there is no unsupported claim to name.
-    kind = data.get("kind", "")
+    kind = data.get("kind", "") 
     # Validated more loosely than the verdict on purpose: this field is
     # auxiliary, so an unexpected value should not abort a run that costs
     # quota. Anything unrecognised becomes empty rather than polluting the
@@ -111,7 +120,7 @@ def _parse(raw: str) -> tuple[str, str, str]:
     # The JSON calls this "unsupported" because that tells the model exactly
     # what to put there; DetectorResult calls it "explanation" because that
     # slot is common to all detectors. Same value, two names.
-    return verdict, data.get("unsupported", ""), data.get("kind", "")
+    return verdict, data.get("unsupported", ""), kind
 
 
 class LLMJudgeDetector:
@@ -124,7 +133,10 @@ class LLMJudgeDetector:
     # at all, silently.
     # v2: added the "kind" field to the prompt. The bump matters — without it
     # the store would serve v1 verdicts, which carry no kind at all.
-    version = "v2"
+    # v3: "supported" now explicitly covers what follows from the source.
+    # Without this the judge read it as "stated verbatim" and rejected correct
+    # short answers that require combining two facts.
+    version = "v3"
 
     def __init__(self):
         # Reads .env into the process environment. Cheap enough to do here,
@@ -135,9 +147,28 @@ class LLMJudgeDetector:
         # immediately and obviously, not surface later as a confusing error
         # from the server about an empty credential.
         self.client = Groq(api_key=os.environ["GROQ_API_KEY"])
+        # Pacing state. Both start at zero so the very first call waits for
+        # nothing — there is no previous call to pace against.
+        self._last_call_ended = 0.0
+        self._last_call_tokens = 0
 
     def check(self, case: TestCase) -> DetectorResult:
-        start = time.perf_counter()
+        """Ask the model to judge a single case."""
+        # Wait until the previous call's tokens have aged out of the per-minute
+        # allowance. Placed before the timer starts, so time spent waiting on a
+        # rate limit is never reported as the model's latency.
+        needed = self._last_call_tokens / TOKENS_PER_MINUTE * 60 # seconds
+        # Seconds elapsed since the previous call returned. perf_counter()
+        # counts from an arbitrary origin, so only the difference between two
+        # readings means anything. Subtracting what has already passed keeps
+        # the gap at exactly `needed` instead of `needed` on top of it.
+        already_waited = time.perf_counter() - self._last_call_ended # seconds
+        if needed > already_waited:
+            time.sleep(needed - already_waited) # wait for the previous call's 
+            # tokens to age out (for X seconds) аnd free up quota for this one
+
+        start = time.perf_counter() # latency covers the API round trip only,
+        # not our parsing — see where it stops below
 
         response = self.client.chat.completions.create(
             model=MODEL_NAME,
@@ -157,7 +188,14 @@ class LLMJudgeDetector:
 
         # Measured before parsing, so the number reflects the API round trip
         # and not our own processing.
-        latency_ms = (time.perf_counter() - start) * 1000
+        latency_ms = (time.perf_counter() - start) * 1000 
+
+        # Tokens count against the allowance regardless of whether or not 
+        # the reply parses, so this is recorded before parsing — 
+        # a malformed reply must still pace the call that follows it.
+        tokens_used = response.usage.total_tokens if response.usage else 0
+        self._last_call_ended = time.perf_counter() 
+        self._last_call_tokens = tokens_used
 
         # choices is a list because the API can return several alternatives;
         # we asked for one, so the first is the only one.
@@ -184,7 +222,7 @@ class LLMJudgeDetector:
             # Includes the hidden reasoning tokens: check_groq.py showed 38 of
             # them spent on a one-word answer, so real calls carry that on top
             # of the visible reply.
-            tokens_used=response.usage.total_tokens if response.usage else 0,
+             tokens_used=tokens_used,
         )
 
 

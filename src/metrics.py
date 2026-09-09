@@ -208,7 +208,7 @@ def by_subset(
 # check:
 if __name__ == "__main__":
     from src.embeddings import EmbeddingDetector
-    from src.entailment import EntailmentDetector
+    from src.llm_judge import LLMJudgeDetector  
     from src.halueval import build_splits
     from src.harness import run
 
@@ -216,7 +216,7 @@ if __name__ == "__main__":
 
     # The whole dev split this time — 80 cases, both subsets. The previous
     # run took only the first 40, which are all QA.
-    results = run(EntailmentDetector(), dev)
+    results = run(LLMJudgeDetector(), dev)
 
     print("\n--- at the placeholder threshold of 0.5 ---")
     m = compute(dev, results)

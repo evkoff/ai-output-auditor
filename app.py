@@ -69,12 +69,70 @@ ACCURACY = {"embeddings": 0.357, "entailment": 0.640, "judge": 0.817}
 OUTCOME = {"grounded": "no error found", "hallucinated": "error found"}
 
 
+def breakdown_table(embedding=None, entailment_result=None, judge=None,
+                    judge_unavailable=False) -> str:
+    """The three-method table, with a dash wherever a check has not run.
+
+    The first two columns hold before anything is checked — what each method is
+    and how often it is right in general — so the table doubles as the panel's
+    empty state. A visitor reads what the product does before pressing anything,
+    and no space sits blank to no purpose.
+    """
+    dash = "—"
+
+    def cells(result):
+        if result is None:
+            return dash, dash, dash
+        return (OUTCOME[result.verdict], f"{result.score:.2f}",
+                f"{result.latency_ms:.0f} ms")
+
+    sim_v, sim_s, sim_t = cells(embedding)
+    ent_v, ent_s, ent_t = cells(entailment_result)
+    # The judge rules rather than scores, so its score cell is always a dash.
+    # "unavailable" and "not run yet" must not look alike: one is a failure the
+    # visitor should know about, the other is simply the starting state.
+    if judge is not None:
+        judge_v, judge_t = OUTCOME[judge.verdict], f"{judge.latency_ms:.0f} ms"
+    elif judge_unavailable:
+        judge_v, judge_t = "unavailable", dash
+    else:
+        judge_v, judge_t = dash, dash
+
+    return "\n".join([
+        "| Method | What it does | Verdict | Score | Speed |",
+        "|---|---|---|---|---|",
+        f"| Text similarity | Compares overall wording, not facts. Right on "
+        f"{ACCURACY['embeddings']:.0%} of 300 test answers. | {sim_v} | {sim_s} | {sim_t} |",
+        f"| Entailment | Asks whether the answer follows from the document. Right "
+        f"on {ACCURACY['entailment']:.0%}. | {ent_v} | {ent_s} | {ent_t} |",
+        f"| AI judge | Reads both and names the unsupported claim. Right on "
+        f"{ACCURACY['judge']:.0%}. | {judge_v} | {dash} | {judge_t} |",
+        "",
+        "*Each score means something different: for text similarity it is how "
+        "close the two texts are in wording (0 to 1), for entailment it is how "
+        "confident the model is that the answer follows from the document (0 to "
+        "1). The AI judge gives a ruling rather than a number, so it has no "
+        "score. The percentages are how often each method agreed with a human on "
+        "the same 300 answers from HaluEval — a public research set in which "
+        "people marked which AI answers were faithful to their source — and only "
+        "those are comparable between methods.*",
+    ])
+
+
 def check(source: str, response: str) -> tuple[str, str]:
     """Run all three detectors and phrase the outcome for a reader.
 
     Returns the verdict a visitor reads, the source with the relevant passage
     marked, and the method-by-method breakdown behind it.
     """
+    # Run on two empty strings the detectors agree enthusiastically — the cosine
+    # similarity of nothing with nothing is 1.00 — and the screen then asserted
+    # that an empty answer was supported by an empty document. Checking first
+    # also saves a judge call, which costs quota.
+    if not source.strip() or not response.strip():
+        return ("*Nothing to check yet — paste a document and an answer first.*",
+                breakdown_table())
+
     # TestCase was designed for evaluation, where the correct answer is known.
     # Here it is not — that is the entire question the user is asking — so the
     # label is empty and the id is a placeholder.
@@ -156,33 +214,10 @@ def check(source: str, response: str) -> tuple[str, str]:
     # what the method is, what it said about these two texts, and how often it is
     # right in general. The last must not read as a property of this check, which
     # is why it has its own column and the footnote below.
-    judge_verdict = OUTCOME[judge_result.verdict] if judge_result is not None else "unavailable"
-    judge_speed = f"{judge_result.latency_ms:.0f} ms" if judge_result is not None else "—"
-
-    breakdown = "\n".join([
-        "| Method | What it does | Verdict | Score | Speed |",
-        "|---|---|---|---|---|",
-        f"| Text similarity | Compares overall wording, not facts. Right on "
-        f"{ACCURACY['embeddings']:.0%} of 300 test answers. | "
-        f"{OUTCOME[embedding_result.verdict]} | {embedding_result.score:.2f} | "
-        f"{embedding_result.latency_ms:.0f} ms |",
-        f"| Entailment | Asks whether the answer follows from the document. Right "
-        f"on {ACCURACY['entailment']:.0%}. | {OUTCOME[entailment_result.verdict]} | "
-        f"{entailment_result.score:.2f} | {entailment_result.latency_ms:.0f} ms |",
-        f"| AI judge | Reads both and names the unsupported claim. Right on "
-        f"{ACCURACY['judge']:.0%}. | {judge_verdict} | — | {judge_speed} |",
-        "",
-        "*Each score means something different: for text similarity it is how "
-        "close the two texts are in wording (0 to 1), for entailment it is how "
-        "confident the model is that the answer follows from the document (0 to "
-        "1). The AI judge gives a ruling rather than a number, so it has no "
-        "score. The percentages are how often each method agreed with a human on "
-        "the same 300 answers from HaluEval — a public research set in which "
-        "people marked which AI answers were faithful to their source — and only "
-        "those are comparable between methods.*",
-    ])
-
-    return "\n".join(lines), breakdown
+    return "\n".join(lines), breakdown_table(
+        embedding_result, entailment_result, judge_result,
+        judge_unavailable=judge_result is None,
+    )
 
 
 # gr.Blocks: everything created inside the `with` is attached to the page, in
@@ -196,7 +231,10 @@ CSS = """
    4.5:1 WCAG AA asks for. Redefining the variable moves every hint, the caption
    and the breakdown to the grey Gradio already uses for field labels (4.8:1),
    so they match each other and stay readable. */
-.gradio-container { --block-info-text-color: var(--block-title-text-color); }
+.gradio-container {
+  --block-info-text-color: #565e6b;
+  --block-title-text-color: #565e6b;
+}
 
 #when-line .md.prose,
 #result-caption .md.prose,
@@ -211,7 +249,32 @@ CSS = """
 
 /* A tinted page makes the two panels read as cards sitting on it, rather than
    as text floating on the same white as everything else. */
-.gradio-container { background: var(--background-fill-secondary); }
+.gradio-container { background: #f1f2f4; }
+
+/* Gradio centres the page inside a narrower container, leaving about 120px
+   unused down each side. Taking that back widens both columns, which lets a
+   pasted article fit in fewer lines — the reason the examples had fallen off
+   the bottom of the screen.
+   Two caps, not one: the container, and `main.fillable` inside it, which has a
+   max-width of its own at 1280px and is what actually held the columns to 600.
+   Two caps hold the columns at 600: the container's own max-width, and a second
+   one on <main> — written inline by Gradio, which is why the rule below needs
+   !important. Widening both takes each column to 680, and a pasted article then
+   fits in nine lines instead of overflowing them. */
+body /* Centred, not flush left: capped at 1440 in a wider window it left 32px of
+   margin on one side and 62px on the other. */
+.gradio-container { max-width: 1440px; margin-inline: auto; }
+
+/* The container is capped and sits flush left, so on a wider window its right
+   edge left an uncovered strip showing white through. The tint has to sit on
+   the document itself. `gradio-app` needs !important for the same reason the
+   width rule does: Gradio writes its background as an inline style, and no
+   stylesheet rule outranks one. */
+body { background: #f1f2f4; }
+gradio-app { background: #f1f2f4 !important; }
+/* !important is not decoration here: Gradio writes this cap as an inline style
+   on <main>, and no stylesheet rule outranks an inline style without it. */
+body .gradio-container main.app.fillable { max-width: 1440px !important; }
 
 /* The right column is one card, like the bordered form on the left. Gradio
    paints a group's inner .styler layer with the border colour, so that the
@@ -249,6 +312,26 @@ CSS = """
   font-variant-numeric: tabular-nums;
 }
 
+/* The fields take the same size and colour as the hint above them. They hold
+   text rather than present it, and at near-black they were the heaviest thing
+   on the page — which put the weight on the input rather than on the verdict.
+   The 1.6 leading stays: it is what makes a pasted wall of text legible at all.
+   Addressed by id because Gradio styles its own textareas through a class of
+   equal weight, and its stylesheet loads last, so an equally specific selector
+   of ours silently loses. */
+#source-field textarea, #answer-field textarea {
+  font-size: var(--block-info-text-size);
+  line-height: 1.6;
+  color: var(--block-info-text-color);
+}
+
+/* The card behind the labels takes the page's colour, so the left column stops
+   reading as the main object on screen — the value is the verdict, and it was
+   losing to two white blocks of near-black text. The fields themselves stay
+   white: an input that does not look like an input stops inviting a paste. */
+#input-card .form,
+#input-card .block { background: #f1f2f4; }
+
 /* Numbers must not wrap: "Score" broke across two lines, and so did "2051 ms". */
 #breakdown-panel th:nth-child(1), #breakdown-panel td:nth-child(1),
 #breakdown-panel th:nth-child(n+3), #breakdown-panel td:nth-child(n+3) {
@@ -256,7 +339,7 @@ CSS = """
 }
 
 #result-body {
-  height: 415px;
+  height: 389px;
   overflow-y: auto;
   display: block;
 }
@@ -307,7 +390,7 @@ with gr.Blocks(
     # spare space to every child, which stretched the button whenever the result
     # grew and left a gap above the breakdown when it did not.
     with gr.Row(equal_height=False):
-        with gr.Column():
+        with gr.Column(elem_id="input-card"):
             # autoscroll=False keeps a pasted document showing its first line:
             # Gradio otherwise scrolls a textbox to the end on every change, so
             # an example arrived mid-article with its opening hidden.
@@ -320,12 +403,14 @@ with gr.Blocks(
                 info="Paste the full text of your own document — an article, a "
                      "contract, a report. Not something the AI wrote for you.",
                 lines=9, max_lines=9, autoscroll=False,
+                elem_id="source-field",
             )
             response_box = gr.Textbox(
                 label="The AI's answer",
                 info="Paste only what the AI replied. Your question isn't needed — "
                      "the answer is checked against the document above.",
                 lines=4, max_lines=4, autoscroll=False,
+                elem_id="answer-field",
             )
             check_button = gr.Button("Check the answer", variant="primary")
 
@@ -342,7 +427,7 @@ with gr.Blocks(
             # not a value to be edited.
             with gr.Column(elem_id="result-body"):
                 verdict_box = gr.Markdown(elem_id="verdict-panel")
-                breakdown_box = gr.Markdown(elem_id="breakdown-panel")
+                breakdown_box = gr.Markdown(breakdown_table(), elem_id="breakdown-panel")
 
 
     # The wiring Interface used to do for us: on click, call check() with the
@@ -361,7 +446,7 @@ with gr.Blocks(
     # on half-pasted text and give the visitor no say in sending their document
     # to an outside service.
     for box in (source_box, response_box):
-        box.change(fn=lambda: ("", ""),
+        box.change(fn=lambda: ("", breakdown_table()),
                    outputs=[verdict_box, breakdown_box])
 
 

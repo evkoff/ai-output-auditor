@@ -15,6 +15,7 @@ from src.embeddings import EmbeddingDetector
 from src.entailment import EntailmentDetector
 from src.halueval import TestCase
 from src.llm_judge import LLMJudgeDetector
+from groq import RateLimitError
 import gradio.themes as gr_themes
 from examples import EXAMPLES, EXAMPLE_LABELS
 
@@ -47,7 +48,16 @@ def _zerogpu_requirement() -> None:
 # detector.
 embeddings = EmbeddingDetector(threshold=0.50)
 entailment = EntailmentDetector(threshold=0.46)
-judge = LLMJudgeDetector()
+# Built inside a try for one reason: __init__ reads GROQ_API_KEY with a
+# subscript, so a missing secret raises here — at import, before the interface
+# exists — and takes the whole page down, including the two detectors that need
+# no key at all. Built this way, a missing key costs the judge alone, and
+# check() already knows what to do when the judge is not there.
+try:
+    judge = LLMJudgeDetector()
+except Exception as error:
+    print(f"judge unavailable at startup: {error}")
+    judge = None
 
 
 # One wording per verdict. The judge also reports whether an unsupported claim
@@ -56,8 +66,8 @@ judge = LLMJudgeDetector()
 # both look the same on screen, and the fallback below uses this dict too — the
 # same outcome reads the same whichever method produced it.
 VERDICT_WORDING = {
-    "grounded": "✅ **Supported by your source**",
-    "hallucinated": "⚠️ **Not supported by your source**",
+    "grounded": "### ✅ Supported by your source",
+    "hallucinated": "### ⚠️ Not supported by your source",
 }
 
 # Measured on the 300-case test split, all three methods, zero failures.
@@ -67,6 +77,64 @@ ACCURACY = {"embeddings": 0.357, "entailment": 0.640, "judge": 0.817}
 # reads plain ones, and the same two words are used for every method so the
 # rows of the breakdown can be compared at a glance.
 OUTCOME = {"grounded": "no error found", "hallucinated": "error found"}
+
+
+# The limit is set by memory, not by any model's context window. HHEM reads a
+# long document in full — its own loading code calls the tokenizer without
+# truncation — and attention costs grow faster than the text: measured on this
+# machine, one check takes 1.2s and 2.0 GB at 10,000 characters, 2.2s and 4.7 GB
+# at 15,000, and 8.0s and 6.2 GB at 25,000. The Space has 16 GB with 2-3 GB
+# already held by torch and the two models, so two visitors checking 25,000
+# characters at once would take it down, and a Space that dies on Demo Day is
+# the worst outcome available. 10,000 leaves room for three at a time.
+#
+# Groq is not the binding limit at this length, though it looked like it at
+# first: 10,000 characters is roughly 2,100 tokens against a per-minute
+# allowance of 8,000, so an over-long request can no longer reach it.
+MAX_CHARS = 10_000
+
+# Stated in words as well, because nobody counts characters. 1,660 by the 6.03
+# characters per word measured across all 380 sources in this project's own
+# data; rounded down, so the hint never promises more than it means.
+MAX_WORDS = "1,600"
+
+# Applied to whichever field a refused check pointed at, and removed from the
+# other. Kept as names rather than written inline: the marker is set in three
+# places and read by one CSS rule, and a typo in a class name fails silently.
+PLAIN: list[str] = []
+OVER = ["over-limit"]
+
+
+def field_marks(flagged: str = "") -> tuple[dict, dict]:
+    """Class updates for the two input fields; at most one carries the marker."""
+    return (gr.update(elem_classes=OVER if flagged == "source" else PLAIN),
+            gr.update(elem_classes=OVER if flagged == "answer" else PLAIN))
+
+
+def length_note(source: str, response: str) -> str:
+    """The live count under the fields, and the only warning about length.
+
+    One count for both fields, because the limit applies to a check as a whole:
+    two separate counters would imply each field had its own budget. Rendered
+    even when both are empty, so the line holds its height and the button does
+    not shift down the moment typing starts.
+    """
+    used = len(source) + len(response)
+
+    if not used:
+        return (f"*Up to {MAX_CHARS:,} characters across both fields — about "
+                f"{MAX_WORDS} words*")
+
+    if used <= MAX_CHARS:
+        return f"*{used:,} of {MAX_CHARS:,} characters*"
+
+    # Name the field that is actually long. In practice it is the document — an
+    # AI's answer is a paragraph or two — but a pasted ten-page answer would
+    # make a hard-coded guess wrong, and wrong about which text to cut.
+    field = "your document" if len(source) >= len(response) else "the AI's answer"
+    return (f"*⚠️ {used:,} of {MAX_CHARS:,} characters. Remove about "
+            f"{used - MAX_CHARS:,} from {field} — this count updates as you "
+            "cut.*")
 
 
 def breakdown_table(embedding=None, entailment_result=None, judge=None,
@@ -101,12 +169,13 @@ def breakdown_table(embedding=None, entailment_result=None, judge=None,
     return "\n".join([
         "| Method | What it does | Verdict | Score | Speed |",
         "|---|---|---|---|---|",
-        f"| Text similarity | Compares overall wording, not facts. Right on "
+        f"| Text similarity | Compares overall wording, not facts, and reads "
+        f"only the start of a long document. Right on "
         f"{ACCURACY['embeddings']:.0%} of 300 test answers. | {sim_v} | {sim_s} | {sim_t} |",
         f"| Entailment | Asks whether the answer follows from the document. Right "
         f"on {ACCURACY['entailment']:.0%}. | {ent_v} | {ent_s} | {ent_t} |",
-        f"| AI judge | Reads both and names the unsupported claim. Right on "
-        f"{ACCURACY['judge']:.0%}. | {judge_v} | {dash} | {judge_t} |",
+        f"| AI judge | Reads both and says what it thinks is unsupported. Right "
+        f"on {ACCURACY['judge']:.0%}. | {judge_v} | {dash} | {judge_t} |",
         "",
         "*Each score means something different: for text similarity it is how "
         "close the two texts are in wording (0 to 1), for entailment it is how "
@@ -119,19 +188,42 @@ def breakdown_table(embedding=None, entailment_result=None, judge=None,
     ])
 
 
-def check(source: str, response: str) -> tuple[str, str]:
+def check(source: str, response: str) -> tuple:
     """Run all three detectors and phrase the outcome for a reader.
 
-    Returns the verdict a visitor reads, the source with the relevant passage
-    marked, and the method-by-method breakdown behind it.
+    Returns four things: the verdict a visitor reads, the method-by-method table
+    behind it, and a class update for each input field — the marker goes on the
+    one a refused check pointed at, and comes off both otherwise.
     """
+
     # Run on two empty strings the detectors agree enthusiastically — the cosine
     # similarity of nothing with nothing is 1.00 — and the screen then asserted
     # that an empty answer was supported by an empty document. Checking first
     # also saves a judge call, which costs quota.
     if not source.strip() or not response.strip():
         return ("*Nothing to check yet — paste a document and an answer first.*",
-                breakdown_table())
+                breakdown_table(), *field_marks())
+
+    # Over the limit nothing runs at all — not the judge, whose free allowance
+    # would be spent on a check that cannot be honest, and not the two local
+    # detectors, whose memory is the reason the limit exists. Two alternatives
+    # were rejected on the way. Shortening the document and checking the rest
+    # would report a claim supported on a later page as unsupported, which is
+    # the product doing the very thing it exists to catch. Splitting it into
+    # parts and sending one a minute costs six calls and six minutes for a long
+    # document, about 17% of the day's allowance on a key shared by every
+    # visitor, and it would invalidate the accuracy figures on screen, which
+    # were measured on whole documents.
+    used = len(source) + len(response)
+    if used > MAX_CHARS:
+        longer = "source" if len(source) >= len(response) else "answer"
+        return (
+            "### ⚠️ Too long to check\n\n"
+            f"*This checks up to {MAX_CHARS:,} characters — about {MAX_WORDS} "
+            f"words — and this is {used:,}. Remove about {used - MAX_CHARS:,} "
+            "characters, or check one section of your document at a time.*",
+            breakdown_table(), *field_marks(longer),
+        )
 
     # TestCase was designed for evaluation, where the correct answer is known.
     # Here it is not — that is the entire question the user is asking — so the
@@ -152,15 +244,33 @@ def check(source: str, response: str) -> tuple[str, str]:
     entailment_result = entailment.check(case)
 
     # The judge is the only detector that can become unavailable: it calls an
-    # outside service on a free tier that runs out. Its failure must reach the
-    # screen as a sentence — the other two still have something to say.
+    # outside service on a free tier that runs out, and it needs a key. Each
+    # reason gets its own sentence — "come back later" is sound advice when the
+    # allowance is spent and a lie when the key is missing.
     judge_result = None
-    try:
-        judge_result = judge.check(case)
-    except Exception as error:
-        # Logged rather than displayed: the visitor needs the sentence below,
-        # the cause belongs in the Space's log.
-        print(f"judge failed: {error}")
+    judge_note = ""
+    tail = ("The verdict below comes from the entailment check instead: it "
+            "answers yes or no, with no explanation of either.*")
+    if judge is None:
+        judge_note = (
+            "*The AI judge did not run: it is not configured in this "
+            "deployment, and retrying will not change that. " + tail
+        )
+    else:
+        try:
+            judge_result = judge.check(case)
+        except RateLimitError:
+            judge_note = (
+                "*The AI judge did not run: its free daily allowance is used "
+                "up, and it resets at midnight UTC. " + tail
+            )
+        except Exception as error:
+            # Logged rather than displayed: the visitor needs the sentence
+            # below, the cause belongs in the Space's log.
+            print(f"judge failed: {error}")
+            judge_note = (
+                "*The AI judge could not be reached just now. " + tail
+            )
 
     lines = []  # Joined into the verdict block below.
 
@@ -187,26 +297,24 @@ def check(source: str, response: str) -> tuple[str, str]:
             # a "part" to re-read would be inventing one.
             if judge_result.explanation:
                 lines.append(
-                    "\n*The two methods disagree: the other check reads this answer "
-                    "as supported. The claim named above is the one in question — "
+                    "\n*The two methods disagree: the entailment check reads this "
+                    "answer as supported. What the judge objected to is above — "
                     "check it against your document yourself.*"
                 )
             else:
                 lines.append(
-                    "\n*The two methods disagree: the AI found nothing unsupported, "
-                    "while the other check was not convinced. Nothing specific was "
-                    "named — worth reading the answer against your document yourself.*"
+                    "\n*The two methods disagree: the AI judge found nothing "
+                    "unsupported, while the entailment check was not convinced. "
+                    "Nothing specific was named — worth reading the answer against "
+                    "your document yourself.*"
                 )
+
     else:
-        # Fallback: HHEM decides, and the loss is stated rather than hidden —
-        # it returns a number, so no explanation of any kind is available.
-        lines.append(VERDICT_WORDING[entailment_result.verdict])
-        lines.append(
-            "\n*The AI check is unavailable — the free daily allowance is used up "
-            "and resets at midnight UTC. This verdict comes from a smaller model "
-            "running here, which gives an answer but cannot say which part is "
-            "unsupported.*"
-        )
+        # Fallback: entailment decides. The note goes first on purpose — a
+        # verdict read before its provenance reads as the product's own word,
+        # and this is not the verdict the product normally gives.
+        lines.append(judge_note)
+        lines.append("\n" + VERDICT_WORDING[entailment_result.verdict])
 
     # One row per method, always on screen rather than hidden behind a disclosure:
     # comparing the three is the point of the project, and a collapsed panel also
@@ -214,10 +322,23 @@ def check(source: str, response: str) -> tuple[str, str]:
     # what the method is, what it said about these two texts, and how often it is
     # right in general. The last must not read as a property of this check, which
     # is why it has its own column and the footnote below.
-    return "\n".join(lines), breakdown_table(
-        embedding_result, entailment_result, judge_result,
-        judge_unavailable=judge_result is None,
+    return (
+        "\n".join(lines),
+        breakdown_table(embedding_result, entailment_result, judge_result,
+                        judge_unavailable=judge_result is None),
+        *field_marks(),
     )
+
+
+def clear_result(source: str, response: str) -> tuple:
+    """Reset everything a result was true of, and recount the characters.
+
+    Never sets the over-limit marker: someone still typing has not asked for
+    anything yet, so the warning at this stage is the count alone. The marker is
+    set only by a press, and cleared here so the screen cannot hold a red field
+    beside a count that is back inside the limit.
+    """
+    return ("", breakdown_table(), length_note(source, response), *field_marks())
 
 
 # gr.Blocks: everything created inside the `with` is attached to the page, in
@@ -238,6 +359,7 @@ CSS = """
 
 #when-line .md.prose,
 #result-caption .md.prose,
+#length-line .md.prose,
 #breakdown-panel .md.prose,
 #breakdown-panel table {
   font-size: var(--block-info-text-size);
@@ -245,7 +367,18 @@ CSS = """
 }
 #when-line .md.prose *,
 #result-caption .md.prose *,
+#length-line .md.prose *,
 #breakdown-panel .md.prose * { color: var(--block-info-text-color); }
+
+/* The field a refused check pointed at. Set on a press, never while typing, so
+   it marks a refusal rather than nagging at someone mid-paste. Keyed on the id
+   because Gradio draws the field's own border through a class of its own, and
+   its stylesheet loads last. */
+#source-field.over-limit textarea,
+#answer-field.over-limit textarea {
+  border-color: #b91c1c;
+  box-shadow: 0 0 0 1px #b91c1c;
+}
 
 /* A tinted page makes the two panels read as cards sitting on it, rather than
    as text floating on the same white as everything else. */
@@ -288,7 +421,7 @@ body .gradio-container main.app.fillable { max-width: 1440px !important; }
    strips that padding, so every line sat 1px from the border. 12px matches the
    13px the left column insets its label and textarea by. Sides only: top
    padding would push the label down and undo the alignment below. */
-#result-card .styler { padding-left: 12px; padding-right: 12px; }
+#result-card .styler { padding: 0 12px 12px 12px; }
 
 /* "Audit verdict" sits on the same line as "Your document", and the caption on
    the same line as that field's hint. Measured: the card's first block starts
@@ -339,19 +472,35 @@ body .gradio-container main.app.fillable { max-width: 1440px !important; }
 }
 
 #result-body {
-  height: 389px;
+  /* Fixed rather than fluid so the card ends level with the button opposite it.
+     Measured in a browser, not guessed: 411 is what puts both columns at the
+     same bottom now that the character count sits above the button. */
+  height: 411px;
   overflow-y: auto;
   display: block;
 }
 
-/* The verdict is the one thing the visitor came for, so it is the largest text
-   in the panel. Scoped to bold in the first paragraph: the label on the flagged
-   claim is also bold but must stay ordinary size. */
-#verdict-panel .md.prose p:first-child strong { font-size: 1.3rem; }
+/* Three sizes on the page, and only three. The verdict is the answer, so it is
+   the one piece of display type. 13px carries prose the visitor has to read —
+   the description at the top, the claim the judge flagged. Everything that
+   explains rather than answers sits at 11px in grey: field hints, the pasted
+   document, this panel's caption, the table and every aside.
+   The verdict is emitted as a heading rather than bold text. An earlier rule
+   keyed on "bold in the first paragraph" and silently stopped matching the day
+   a note was placed above the verdict, which shrank it to body size. */
+#verdict-panel .md.prose h3 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin: 0 0 var(--spacing-md) 0;
+}
 
-/* Everything italic in the panel is an aside — the note about disagreement,
-   the unavailable-judge message, the footnote under the table. */
-#verdict-panel .md.prose em { color: var(--block-info-text-color); }
+/* Italic marks an aside: the missing-judge note, the disagreement note, the
+   footnote under the table. They take the supporting size, not body size. */
+#verdict-panel .md.prose em {
+  color: var(--block-info-text-color);
+  font-size: var(--block-info-text-size);
+  line-height: var(--line-sm);
+}
 """
 
 with gr.Blocks(
@@ -374,16 +523,14 @@ with gr.Blocks(
     gr.Markdown(
         "Gave an AI a document and asked it something — and want to be sure of the "
         "answer? Paste both below. This checks the answer against your document and "
-        "tells you either that it holds up, or exactly which parts your document "
-        "does not back up."
+        "tells you either that it holds up, or which claim your document does not "
+        "back up."
     )
     gr.Markdown(
         "Most worth doing when you asked for figures, dates or names, when the answer "
         "may go beyond what your document covers, or when the document is long.",
         elem_id="when-line",
     )
-
-
 
     # A Row places its children side by side; a Column stacks them. equal_height
     # is off on purpose: it forces both columns to the same height and hands the
@@ -412,23 +559,27 @@ with gr.Blocks(
                 lines=4, max_lines=4, autoscroll=False,
                 elem_id="answer-field",
             )
+            # Rendered from the start rather than appearing on first use: the
+            # line reserves its own height, so the button below cannot shift
+            # down under the cursor the moment someone starts typing.
+            length_line = gr.Markdown(length_note("", ""), elem_id="length-line")
             check_button = gr.Button("Check the answer", variant="primary")
 
         with gr.Column():
-          with gr.Group(elem_id="result-card"):
-            gr.Markdown("Audit verdict", elem_id="result-label")
-            # Static: true of every check, so it does not wait for one.
-            gr.Markdown(
-                "Three methods run on every check. The headline comes from the AI "
-                "judge — the only one that can name what is unsupported.",
-                elem_id="result-caption",
-            )
-            # Markdown rather than a Textbox: the verdict is prose to be read,
-            # not a value to be edited.
-            with gr.Column(elem_id="result-body"):
-                verdict_box = gr.Markdown(elem_id="verdict-panel")
-                breakdown_box = gr.Markdown(breakdown_table(), elem_id="breakdown-panel")
-
+            with gr.Group(elem_id="result-card"):
+                gr.Markdown("Audit verdict", elem_id="result-label")
+                # Static: true of every check, so it does not wait for one.
+                gr.Markdown(
+                    "Three methods check every answer. Their results are below. "
+                    "Only the AI judge explains what it found, so the verdict "
+                    "normally comes from it.",
+                    elem_id="result-caption",
+                )
+                # Markdown rather than a Textbox: the verdict is prose to be read,
+                # not a value to be edited.
+                with gr.Column(elem_id="result-body"):
+                    verdict_box = gr.Markdown(elem_id="verdict-panel")
+                    breakdown_box = gr.Markdown(breakdown_table(), elem_id="breakdown-panel")
 
     # The wiring Interface used to do for us: on click, call check() with the
     # contents of these two boxes and spread its two return values across the
@@ -436,7 +587,7 @@ with gr.Blocks(
     check_button.click(
         fn=check,
         inputs=[source_box, response_box],
-        outputs=[verdict_box, breakdown_box],
+        outputs=[verdict_box, breakdown_box, source_box, response_box],
     )
 
     # A result is only true of the inputs it was computed from. The moment either
@@ -445,21 +596,24 @@ with gr.Blocks(
     # This is why the button stays: running on every keystroke would spend quota
     # on half-pasted text and give the visitor no say in sending their document
     # to an outside service.
+    # The two fields are outputs as well as inputs here, but only ever receive a
+    # class update — no value is sent back, so what is being typed is untouched.
     for box in (source_box, response_box):
-        box.change(fn=lambda: ("", breakdown_table()),
-                   outputs=[verdict_box, breakdown_box])
-
+        box.change(fn=clear_result,
+                   inputs=[source_box, response_box],
+                   outputs=[verdict_box, breakdown_box, length_line,
+                            source_box, response_box])
 
     # Examples must be created explicitly now, and told which components they
-    # fill. Both rows are real cases from the reality check; the texts, their
-    # Wikipedia attribution and the labels live in examples.py.
+    # fill. One is a benchmark answer written to contain an error, the other a
+    # real model answer that holds up; both are documented, with their sources
+    # and licences, in examples.py.
 
     gr.Examples(
         examples=EXAMPLES,
         inputs=[source_box, response_box],
         example_labels=EXAMPLE_LABELS,
     )
-
 
 
 # SSR is on by default and shuts the app down immediately on Spaces — a known

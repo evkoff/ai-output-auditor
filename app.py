@@ -146,7 +146,28 @@ def breakdown_table(embedding=None, entailment_result=None, judge=None,
     empty state. A visitor reads what the product does before pressing anything,
     and no space sits blank to no purpose.
     """
-    dash = "—"
+    dash = '<span class="empty">—</span>'
+
+    def score_cell(result, threshold: float, gloss: str) -> str:
+        """The score, where it falls, and what the number means.
+
+        A number alone says nothing here: each method starts calling an answer
+        unsupported at a different place, and neither place is where a reader
+        would guess. The bar is filled to the score with a tick at that
+        method's own cut-off, so the cell answers "high or low" by itself and
+        never invites a comparison with the row above.
+        """
+        tick = f'<span class="tick" style="left:{threshold * 100:.0f}%"></span>'
+
+        if result is None:
+            # Before anything runs the track still shows where the line is.
+            return f'{dash}<span class="bar">{tick}</span>{gloss}'
+
+        # Clamped because cosine similarity can be negative — four of the 300
+        # test answers scored below zero — and a negative width draws nothing.
+        width = min(max(result.score, 0.0), 1.0) * 100
+        fill = f'<span class="fill" style="width:{width:.0f}%"></span>'
+        return f'{result.score:.2f}<span class="bar">{fill}{tick}</span>{gloss}'
 
     def cells(result):
         if result is None:
@@ -156,6 +177,14 @@ def breakdown_table(embedding=None, entailment_result=None, judge=None,
 
     sim_v, sim_s, sim_t = cells(embedding)
     ent_v, ent_s, ent_t = cells(entailment_result)
+
+    # Built here rather than inside the table below: the gloss carries an
+    # apostrophe, and quoting it inside an f-string inside a table row is the
+    # kind of line nobody can edit later without breaking it.
+    sim_cell = score_cell(embedding, embeddings.threshold,
+                          "(how much the answer's wording matches your document)")
+    ent_cell = score_cell(entailment_result, entailment.threshold,
+                          "(how sure the answer follows from your document)")
     # The judge rules rather than scores, so its score cell is always a dash.
     # "unavailable" and "not run yet" must not look alike: one is a failure the
     # visitor should know about, the other is simply the starting state.
@@ -169,22 +198,20 @@ def breakdown_table(embedding=None, entailment_result=None, judge=None,
     return "\n".join([
         "| Method | What it does | Verdict | Score | Speed |",
         "|---|---|---|---|---|",
-        f"| Text similarity | Compares overall wording, not facts, and reads "
-        f"only the start of a long document. Right on "
-        f"{ACCURACY['embeddings']:.0%} of 300 test answers. | {sim_v} | {sim_s} | {sim_t} |",
-        f"| Entailment | Asks whether the answer follows from the document. Right "
-        f"on {ACCURACY['entailment']:.0%}. | {ent_v} | {ent_s} | {ent_t} |",
-        f"| AI judge | Reads both and says what it thinks is unsupported. Right "
-        f"on {ACCURACY['judge']:.0%}. | {judge_v} | {dash} | {judge_t} |",
+        f"| Text similarity<br>embeddings<br>all-MiniLM-L6-v2 | Compares "
+        f"overall wording, not facts, and reads only the start of a long "
+        f"document. Right on {ACCURACY['embeddings']:.0%}. "
+        f"| {sim_v} | {sim_cell} | {sim_t} |",
+        f"| Entailment<br>HHEM-2.1-Open | Asks whether the answer follows from "
+        f"the document. Right on {ACCURACY['entailment']:.0%}. "
+        f"| {ent_v} | {ent_cell} | {ent_t} |",
+        f"| AI judge<br>gpt-oss-120b | Reads both and says what it thinks is "
+        f"unsupported. Right on {ACCURACY['judge']:.0%}. "
+        f"| {judge_v} | {dash}<br>(rules, does not score) | {judge_t} |",
         "",
-        "*Each score means something different: for text similarity it is how "
-        "close the two texts are in wording (0 to 1), for entailment it is how "
-        "confident the model is that the answer follows from the document (0 to "
-        "1). The AI judge gives a ruling rather than a number, so it has no "
-        "score. The percentages are how often each method agreed with a human on "
-        "the same 300 answers from HaluEval — a public research set in which "
-        "people marked which AI answers were faithful to their source — and only "
-        "those are comparable between methods.*",
+        "*The percentages come from 300 answers in HaluEval, a public "
+        "set in which people marked which AI answers were faithful to their "
+        "source. Only those are comparable between methods; the scores are not.*",
     ])
 
 
@@ -432,16 +459,92 @@ body .gradio-container main.app.fillable { max-width: 1440px !important; }
   font-size: var(--block-title-text-size);
   font-weight: var(--block-title-text-weight);
 }
-#result-caption { margin-top: -1px; }
+/* Matched to the left column by measurement, not by eye: Gradio sets its
+   field hint at 17.875px of line and 2px below the label, and the caption
+   opposite has to do the same or the two columns' second lines sit apart. */
+#result-caption { margin-top: 1px; margin-bottom: 5px; }
+#result-caption .md.prose p { line-height: 17.875px; }
 
 /* The panel keeps its size whatever it holds: a result that resized the page
    moved the button and the examples under the reader's cursor. Taller content
    scrolls inside instead. Height is the left column measured from the label to
    the bottom of the button. */
-/* The numeric columns are monospaced with tabular figures, so every digit sits
-   in the same width and the column reads down as a list of measurements. */
+/* Gradio's own footer — "Use via API · Built with Gradio · Settings" — sits
+   below the examples and, with the space reserved around it, adds 51px to a
+   page that has to fit one screen. Nothing on it belongs to this product, and
+   removing it is what keeps the whole thing visible without scrolling on a
+   717px-tall window.
+
+   !important on both: Gradio styles its footer through `footer` plus two of
+   its own generated classes, which outranks a plain element selector, and the
+   page padding is set the same way. This is the fourth time in this file that
+   a rule which looked correct did nothing until it outranked Gradio's own. */
+footer { display: none !important; }
+main.app.fillable { padding-bottom: 0 !important; }
+
+/* The right column's heading and caption are Markdown, the left column's are
+   Gradio's own label and hint. Same face, same size, same top — but Markdown
+   carries a taller line, so the two columns' text sat at different heights
+   inside matching rows, and the difference showed the moment either wrapped.
+   1.4 is what the left column uses. */
+#result-label .md.prose p { line-height: 1.4; }
+
+/* The claim the judge flagged needs the same air under it that the table has
+   under it — 17px, measured, not picked. As padding on the panel rather than
+   a margin on the paragraph: Gradio's own typography sets `.prose :last-child`
+   to zero, and a margin there loses or collapses away whatever it is set to.
+   :has() limits it to a panel that actually holds a verdict. */
+#verdict-panel:has(h3) { padding-bottom: 17px; }
+
+/* Above it, the opposite problem: Gradio puts 16px over every paragraph that
+   is not the first, which is a lot between a verdict and the claim under it. */
+#verdict-panel .md.prose p { margin-top: 6px; }
+
+/* Empty, the panel still costs a row gap, and the table opposite then starts
+   6px below the field it should line up with. Removed from the flow entirely
+   until there is something in it. */
+#verdict-panel:not(:has(.md.prose > *)) { display: none; }
+
+/* The example buttons come in at 13px, the size of a field label, while the
+   text around them sits at 11px — so they read as the loudest thing in the
+   lower half of the screen for something that is a convenience, not the task.
+   Dropped to the supporting size already in the scale rather than a new one. */
+.gallery-item, .gallery-item button { font-size: var(--block-info-text-size); }
+
+/* A score on its own says nothing: each method starts calling an answer
+   unsupported at a different place, and neither place is where a reader would
+   guess. The bar is filled to the score with a tick at that row's own cut-off,
+   so the cell shows how far from the line the number sits — which a colour
+   could not — and the ticks standing in different places keep the three rows
+   from reading as one shared scale. Rejected on the way: colouring the number,
+   which would have repeated the Verdict column beside it. */
+#breakdown-panel .bar {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 120px;
+  height: 4px;
+  margin: 3px 0;
+  border-radius: 2px;
+  background: #e4e4e7;
+}
+#breakdown-panel .bar .fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  border-radius: 2px;
+  background: #9ca3af;
+}
+#breakdown-panel .bar .tick {
+  position: absolute;
+  top: -2px; bottom: -2px;
+  width: 1px;
+  background: #3f3f46;
+}
+
+/* Digits share one width down the numeric columns. Only the figures change —
+   the face stays the body face, because those columns now carry prose as well
+   as numbers, and two typefaces in one small table read as an accident. */
 #breakdown-panel td:nth-child(n+4) {
-  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -466,16 +569,26 @@ body .gradio-container main.app.fillable { max-width: 1440px !important; }
 #input-card .block { background: #f1f2f4; }
 
 /* Numbers must not wrap: "Score" broke across two lines, and so did "2051 ms". */
-#breakdown-panel th:nth-child(1), #breakdown-panel td:nth-child(1),
-#breakdown-panel th:nth-child(n+3), #breakdown-panel td:nth-child(n+3) {
+#breakdown-panel th:nth-child(3), #breakdown-panel td:nth-child(3),
+#breakdown-panel th:nth-child(5), #breakdown-panel td:nth-child(5) {
   white-space: nowrap;
 }
 
+/* The method column carries two lines by design — the name a visitor reads and
+   the model behind it. Without a floor the table hands its width to the other
+   columns and breaks the model name across four lines. Measured: 140px is what
+   keeps each on one line of its own. */
+#breakdown-panel th:nth-child(1), #breakdown-panel td:nth-child(1) {
+  min-width: 110px;
+}
+
+
 #result-body {
-  /* Fixed rather than fluid so the card ends level with the button opposite it.
-     Measured in a browser, not guessed: 411 is what puts both columns at the
-     same bottom now that the character count sits above the button. */
-  height: 411px;
+  /* Fixed rather than fluid so the card ends level with the button opposite
+     it. Measured in a browser, not guessed: 465 is what puts both columns at
+     the same bottom now that the columns are split 45/55 and the left
+     one no longer wraps its hints onto a third line. */
+  height: 443px;
   overflow-y: auto;
   display: block;
 }
@@ -509,8 +622,9 @@ with gr.Blocks(
     # shouts on a page whose whole subject is calibrated confidence; slate
     # still reads as the one action to take, without the alarm.
     # Inter is drawn for screens at small sizes, and this page is mostly small
-    # text: two field hints, a caption and a footnote at 11px. A monospace face
-    # carries the numeric columns so digits line up down the table.
+    # text: two field hints, a caption and a footnote at 11px. The breakdown
+    # table takes the same face throughout, with tabular figures where numbers
+    # need to line up.
     theme=gr_themes.Default(
         text_size=gr_themes.sizes.text_sm,
         primary_hue=gr_themes.colors.slate,
@@ -537,7 +651,7 @@ with gr.Blocks(
     # spare space to every child, which stretched the button whenever the result
     # grew and left a gap above the breakdown when it did not.
     with gr.Row(equal_height=False):
-        with gr.Column(elem_id="input-card"):
+        with gr.Column(elem_id="input-card", scale=45):
             # autoscroll=False keeps a pasted document showing its first line:
             # Gradio otherwise scrolls a textbox to the end on every change, so
             # an example arrived mid-article with its opening hidden.
@@ -565,14 +679,13 @@ with gr.Blocks(
             length_line = gr.Markdown(length_note("", ""), elem_id="length-line")
             check_button = gr.Button("Check the answer", variant="primary")
 
-        with gr.Column():
+        with gr.Column(scale=55):
             with gr.Group(elem_id="result-card"):
                 gr.Markdown("Audit verdict", elem_id="result-label")
                 # Static: true of every check, so it does not wait for one.
                 gr.Markdown(
-                    "Three methods check every answer. Their results are below. "
-                    "Only the AI judge explains what it found, so the verdict "
-                    "normally comes from it.",
+                    "All three methods check the answer. Only the AI judge "
+                    "explains what it found, so the verdict comes from it.",
                     elem_id="result-caption",
                 )
                 # Markdown rather than a Textbox: the verdict is prose to be read,

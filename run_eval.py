@@ -30,11 +30,13 @@ TOKEN_BUDGET = 180_000
 # Thresholds are the values tuned on the dev split, applied to test unchanged.
 #
 # Detector 1 appears twice on purpose. Dev tuning selected 0.00 — "call
-# everything grounded" — which on test yields exactly 0.500 by construction:
-# correct by protocol, and a measurement of nothing. The naive 0.50 runs beside
-# it as the figure anyone reaching for this approach would actually get. The
-# threshold is part of the version string, so the two land under separate cache
-# keys and cannot be confused.
+# everything grounded" — which on test lands at 0.487 rather than the 0.500 the
+# protocol suggests: cosine similarity runs from -1 to 1, and four qa answers
+# score just below zero, so even this degenerate setting produces four false
+# alarms and catches nothing. The naive 0.50 runs beside it as the figure
+# anyone reaching for this approach would actually get. The threshold is part
+# of the version string, so the two land under separate cache keys and cannot
+# be confused.
 #
 # The judge is last so that the free detectors finish and are safely cached
 # before anything spends quota.

@@ -70,8 +70,17 @@ VERDICT_WORDING = {
     "hallucinated": "### ⚠️ Not supported by your source",
 }
 
-# Measured on the 300-case test split, all three methods, zero failures.
+# Measured on the 300-case test split by analyze.py: accuracy, precision,
+# recall, F1. Written as numbers rather than computed at start-up, because the
+# cache they come from is not in the repository — the Space has no way to
+# recompute them, and a page that re-scored 300 cases on every visit would be
+# the wrong design even if it could.
 ACCURACY = {"embeddings": 0.357, "entailment": 0.640, "judge": 0.817}
+BENCHMARK = {
+    "Text similarity": (0.357, 0.235, 0.127, 0.165),
+    "Entailment": (0.640, 0.750, 0.420, 0.538),
+    "AI judge": (0.817, 0.832, 0.793, 0.812),
+}
 
 # "grounded" and "hallucinated" are our internal words. On screen a visitor
 # reads plain ones, and the same two words are used for every method so the
@@ -200,19 +209,57 @@ def breakdown_table(embedding=None, entailment_result=None, judge=None,
         "|---|---|---|---|---|",
         f"| Text similarity<br>embeddings<br>all-MiniLM-L6-v2 | Compares "
         f"overall wording, not facts, and reads only the start of a long "
-        f"document. Right on {ACCURACY['embeddings']:.0%}. "
+        f"document. Right on {ACCURACY['embeddings']:.0%} (accuracy). "
         f"| {sim_v} | {sim_cell} | {sim_t} |",
         f"| Entailment<br>HHEM-2.1-Open | Asks whether the answer follows from "
-        f"the document. Right on {ACCURACY['entailment']:.0%}. "
+        f"the document. Right on {ACCURACY['entailment']:.0%} (accuracy). "
         f"| {ent_v} | {ent_cell} | {ent_t} |",
         f"| AI judge<br>gpt-oss-120b | Reads both and says what it thinks is "
-        f"unsupported. Right on {ACCURACY['judge']:.0%}. "
+        f"unsupported. Right on {ACCURACY['judge']:.0%} (accuracy). "
         f"| {judge_v} | {dash}<br>(rules, does not score) | {judge_t} |",
         "",
-        "*The percentages come from 300 answers in HaluEval, a public "
+        "*The accuracy percentages come from 300 answers in HaluEval, a public "
         "set in which people marked which AI answers were faithful to their "
         "source. Only those are comparable between methods; the scores are not.*",
     ])
+
+# ---- The second tab: how the three methods were measured -------------------
+
+BENCHMARK_INTRO = """### Where these numbers come from
+
+All three methods were measured on **HaluEval**, a public set in which people
+read an AI's answer beside its source and marked whether it was faithful. 150
+records were used, each supplying one faithful answer and one hallucinated, so
+every method was scored on the same **300 answers**.
+
+**Accuracy** is how often a method agreed with the human. **Recall** is the
+share of real errors it caught — the number this product lives on, since an
+error that reaches you unflagged is the failure it exists to prevent.
+**Precision** is how often an alarm was a real error, and **F1** balances the
+two."""
+
+CASCADE_TEXT = """### Could a cheap method do the work instead?
+
+Only where it is already certain. Sending the judge only the answers the cheap
+check scores above a cut-off reproduces its accuracy exactly while calling it on
+82% of them — the 18% skipped are answers the cheap check reads as errors, and
+it is right about those as often as the judge is.
+
+Past that, accuracy is sold rather than saved: halving the bill costs ten points
+of accuracy and nineteen of recall."""
+
+
+def benchmark_table() -> str:
+    """One row per method, four measures each, in the order of the intro above."""
+    rows = ["| Method | Accuracy | Precision | Recall | F1 |",
+            "|---|---|---|---|---|"]
+
+    for name, (accuracy, precision, recall, f1) in BENCHMARK.items():
+        rows.append(f"| {name} | {accuracy:.3f} | {precision:.3f} | "
+                    f"{recall:.3f} | {f1:.3f} |")
+
+    return "\n".join(rows)
+
 
 
 def check(source: str, response: str) -> tuple:
@@ -423,7 +470,8 @@ CSS = """
    fits in nine lines instead of overflowing them. */
 body /* Centred, not flush left: capped at 1440 in a wider window it left 32px of
    margin on one side and 62px on the other. */
-.gradio-container { max-width: 1440px; margin-inline: auto; }
+.gradio-container { width: 100%; max-width: 1060px; margin-inline: auto; }
+gradio-app { display: block; width: 100%; }
 
 /* The container is capped and sits flush left, so on a wider window its right
    edge left an uncovered strip showing white through. The tint has to sit on
@@ -434,7 +482,15 @@ body { background: #f1f2f4; }
 gradio-app { background: #f1f2f4 !important; }
 /* !important is not decoration here: Gradio writes this cap as an inline style
    on <main>, and no stylesheet rule outranks an inline style without it. */
-body .gradio-container main.app.fillable { max-width: 1440px !important; }
+/* Width is taken from the window, never from the content. Gradio's fillable
+   mode sizes this container to whatever the visible tab happens to contain, so
+   switching to the comparison tab — whose text is capped at 460 and charts at
+   520 — shrank the whole page from 1440 to 1060, moving the header and the tab
+   bar with it. Fixing the width holds everything still. */
+body .gradio-container main.app.fillable {
+  width: 100% !important;
+  max-width: 1060px !important;
+}
 
 /* The right column is one card, like the bordered form on the left. Gradio
    paints a group's inner .styler layer with the border colour, so that the
@@ -511,6 +567,49 @@ main.app.fillable { padding-bottom: 0 !important; }
    Dropped to the supporting size already in the scale rather than a new one. */
 .gallery-item, .gallery-item button { font-size: var(--block-info-text-size); }
 
+/* The tab bar costs 48px of a page that has to fit one screen, and the header
+   above it was spending 64 of its 155 on air. The gaps between the header
+   blocks are Gradio's own row-gap, which cannot be reached without matching
+   its generated class names — so the space is taken back as negative margins
+   on the blocks themselves, which is both reachable and exact. */
+#page-title h1 { font-size: 1.3rem; }
+#page-title, #intro-line, #when-line { margin-bottom: -8px; }
+main.app.fillable { padding-top: 10px !important; }
+
+/* The charts are drawn at 1650px wide for a projector. Left at that size they
+   fill the screen one at a time; at 520 both sit beside the text about them. */
+#methods-chart img, #tradeoff-chart img { max-width: 520px; }
+
+/* The second tab arrived using the browser's default sizes, two steps larger
+   than anything on the first tab. It takes the same scale: 13px for prose,
+   11px for the table, and a heading one step up rather than three. */
+#compare-text .md.prose {
+  /* Gradio renders this as a span, and a max-width on an inline element does
+     nothing at all — the rule below looked correct and changed no pixel. */
+  display: block;
+  font-size: 13px;
+  line-height: 1.5;
+  /* A column of 612px runs to about 97 characters a line; 460 brings it to 73,
+     inside the 45-75 a reader holds comfortably. The height this costs is free
+     — the charts opposite are the taller column either way. */
+  max-width: 460px;
+}
+#compare-text .md.prose h3 { font-size: 15px; font-weight: 700; margin: 0 0 6px 0; }
+#compare-text .md.prose p { margin: 0 0 10px 0; }
+
+/* Dark is what a reader must read — the verdict, their own pasted text. Text
+   that explains is grey, on both tabs, so the rule holds wherever it appears. */
+#compare-text .md.prose p, #intro-line .md.prose p {
+  color: var(--block-info-text-color);
+}
+/* Every 11px element in this app is grey; this table arrived near-black and
+   was the one thing on the second tab that broke the scale. */
+#benchmark-table .md.prose, #benchmark-table table,
+#benchmark-table td, #benchmark-table th {
+  font-size: 11px;
+  color: var(--block-info-text-color);
+}
+
 /* A score on its own says nothing: each method starts calling an answer
    unsupported at a different place, and neither place is where a reader would
    guess. The bar is filled to the score with a tick at that row's own cut-off,
@@ -582,12 +681,53 @@ main.app.fillable { padding-bottom: 0 !important; }
   min-width: 110px;
 }
 
+/* Gradio pads table cells for a page with room to spare. This one sits in a
+   fixed panel beside a column of inputs, and the padding was costing it both
+   the height it needed and the width that stopped it wrapping. */
+#breakdown-panel td, #breakdown-panel th { padding: 4px 6px; }
+
+/* The outline was being drawn twice — once by the table and once by the cells
+   along its edge — and with collapsed borders the two land a fraction of a
+   pixel apart, which shows as a notch at every row on the left edge. The cells
+   draw the whole grid; the table draws nothing. */
+/* The grid was drawn three times over: a border on the table, another on every
+   row, a third on every cell — and 2px of spacing holding them apart, so the
+   horizontal lines stopped short of the vertical one and every corner showed a
+   notch. Collapsed, with the cells the only thing drawing, the grid closes. */
+#breakdown-panel table, #benchmark-table table {
+  /* One outline, drawn once, by the table itself. The cells below draw only
+     the lines between them, so nothing meets anything at a corner. */
+  border: 1px solid var(--border-color-primary);
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+#breakdown-panel tr, #benchmark-table tr { border: none; }
+
+/* Gradio wraps its tables in a container that already draws a rounded outline.
+   The cells were drawing a second, square one just inside it, and a square
+   corner cannot meet a rounded one — which is the notch visible at every row
+   on the left edge. The cells now draw only the lines between themselves and
+   stop at the edges, leaving the outline to the wrapper that owns it. */
+#breakdown-panel td, #breakdown-panel th,
+#benchmark-table td, #benchmark-table th {
+  border: none;
+  border-bottom: 1px solid var(--border-color-primary);
+  border-right: 1px solid var(--border-color-primary);
+}
+#breakdown-panel tr:last-child td, #benchmark-table tr:last-child td {
+  border-bottom: none;
+}
+#breakdown-panel td:last-child, #breakdown-panel th:last-child,
+#benchmark-table td:last-child, #benchmark-table th:last-child {
+  border-right: none;
+}
+
 
 #result-body {
   /* Fixed rather than fluid so the card ends level with the button opposite
      it. Measured in a browser, not guessed: 465 is what puts both columns at
-     the same bottom now that the columns are split 45/55 and the left
-     one no longer wraps its hints onto a third line. */
+     the same bottom now that the page is capped at 1060 and split
+     34/66, which is what the breakdown table needs to stop wrapping. */
   height: 443px;
   overflow-y: auto;
   display: block;
@@ -633,11 +773,11 @@ with gr.Blocks(
     ),
     css=CSS,
 ) as demo:
-    gr.Markdown("# AI Output Auditor")
+    gr.Markdown("# AI Output Auditor", elem_id="page-title")
     gr.Markdown(
-        "Gave an AI a document and asked it something — and want to be sure of the "
-        "answer? Paste both below. This checks the answer against your document and "
-        "tells you either that it holds up, or which claim your document does not "
+        elem_id="intro-line",
+        value="Gave an AI a document and asked it something? Paste both below — "
+        "this checks the answer against your document and says what it does not "
         "back up."
     )
     gr.Markdown(
@@ -646,87 +786,117 @@ with gr.Blocks(
         elem_id="when-line",
     )
 
-    # A Row places its children side by side; a Column stacks them. equal_height
-    # is off on purpose: it forces both columns to the same height and hands the
-    # spare space to every child, which stretched the button whenever the result
-    # grew and left a gap above the breakdown when it did not.
-    with gr.Row(equal_height=False):
-        with gr.Column(elem_id="input-card", scale=45):
-            # autoscroll=False keeps a pasted document showing its first line:
-            # Gradio otherwise scrolls a textbox to the end on every change, so
-            # an example arrived mid-article with its opening hidden.
-            # max_lines matches lines on purpose. Without it a Gradio textbox
-            # grows with its content: pasting an article pushed the button and
-            # the examples down the page, and left the fixed result card no
-            # longer level with them. Fixed height, scroll inside.
-            source_box = gr.Textbox(
-                label="Your document",
-                info="Paste the full text of your own document — an article, a "
-                     "contract, a report. Not something the AI wrote for you.",
-                lines=9, max_lines=9, autoscroll=False,
-                elem_id="source-field",
+    # Two surfaces, not one page: a visitor with a document wants a verdict,
+    # and the benchmark behind it is a different question asked by a different
+    # reader. Tabs keep the second from crowding the first.
+    with gr.Tabs():
+        with gr.Tab("Check an answer"):
+
+            # A Row places its children side by side; a Column stacks them. equal_height
+            # is off on purpose: it forces both columns to the same height and hands the
+            # spare space to every child, which stretched the button whenever the result
+            # grew and left a gap above the breakdown when it did not.
+            with gr.Row(equal_height=False):
+                with gr.Column(elem_id="input-card", scale=42):
+                    # autoscroll=False keeps a pasted document showing its first line:
+                    # Gradio otherwise scrolls a textbox to the end on every change, so
+                    # an example arrived mid-article with its opening hidden.
+                    # max_lines matches lines on purpose. Without it a Gradio textbox
+                    # grows with its content: pasting an article pushed the button and
+                    # the examples down the page, and left the fixed result card no
+                    # longer level with them. Fixed height, scroll inside.
+                    source_box = gr.Textbox(
+                        label="Your document",
+                        info="Paste the full text of your own document — an article, a "
+                             "contract, a report. Not something the AI wrote for you.",
+                        lines=9, max_lines=9, autoscroll=False,
+                        elem_id="source-field",
+                    )
+                    response_box = gr.Textbox(
+                        label="The AI's answer",
+                        info="Paste only what the AI replied. Your question isn't needed — "
+                             "the answer is checked against the document above.",
+                        lines=4, max_lines=4, autoscroll=False,
+                        elem_id="answer-field",
+                    )
+                    # Rendered from the start rather than appearing on first use: the
+                    # line reserves its own height, so the button below cannot shift
+                    # down under the cursor the moment someone starts typing.
+                    length_line = gr.Markdown(length_note("", ""), elem_id="length-line")
+                    check_button = gr.Button("Check the answer", variant="primary")
+
+                with gr.Column(scale=58):
+                    with gr.Group(elem_id="result-card"):
+                        gr.Markdown("Audit verdict", elem_id="result-label")
+                        # Static: true of every check, so it does not wait for one.
+                        gr.Markdown(
+                            "All three methods check the answer. Only the AI judge "
+                            "explains what it found, so the verdict comes from it.",
+                            elem_id="result-caption",
+                        )
+                        # Markdown rather than a Textbox: the verdict is prose to be read,
+                        # not a value to be edited.
+                        with gr.Column(elem_id="result-body"):
+                            verdict_box = gr.Markdown(elem_id="verdict-panel")
+                            breakdown_box = gr.Markdown(breakdown_table(), elem_id="breakdown-panel")
+
+            # The wiring Interface used to do for us: on click, call check() with the
+            # contents of these two boxes and spread its two return values across the
+            # verdict and the breakdown. Outputs are matched by position, not by name.
+            check_button.click(
+                fn=check,
+                inputs=[source_box, response_box],
+                outputs=[verdict_box, breakdown_box, source_box, response_box],
             )
-            response_box = gr.Textbox(
-                label="The AI's answer",
-                info="Paste only what the AI replied. Your question isn't needed — "
-                     "the answer is checked against the document above.",
-                lines=4, max_lines=4, autoscroll=False,
-                elem_id="answer-field",
+
+            # A result is only true of the inputs it was computed from. The moment either
+            # one changes — including when clicking an example fills them — the panel is
+            # cleared, so the screen can never show a new document beside an old verdict.
+            # This is why the button stays: running on every keystroke would spend quota
+            # on half-pasted text and give the visitor no say in sending their document
+            # to an outside service.
+            # The two fields are outputs as well as inputs here, but only ever receive a
+            # class update — no value is sent back, so what is being typed is untouched.
+            for box in (source_box, response_box):
+                box.change(fn=clear_result,
+                           inputs=[source_box, response_box],
+                           outputs=[verdict_box, breakdown_box, length_line,
+                                    source_box, response_box])
+
+            # Examples must be created explicitly now, and told which components they
+            # fill. One is a benchmark answer written to contain an error, the other a
+            # real model answer that holds up; both are documented, with their sources
+            # and licences, in examples.py.
+
+            gr.Examples(
+                examples=EXAMPLES,
+                inputs=[source_box, response_box],
+                example_labels=EXAMPLE_LABELS,
             )
-            # Rendered from the start rather than appearing on first use: the
-            # line reserves its own height, so the button below cannot shift
-            # down under the cursor the moment someone starts typing.
-            length_line = gr.Markdown(length_note("", ""), elem_id="length-line")
-            check_button = gr.Button("Check the answer", variant="primary")
 
-        with gr.Column(scale=55):
-            with gr.Group(elem_id="result-card"):
-                gr.Markdown("Audit verdict", elem_id="result-label")
-                # Static: true of every check, so it does not wait for one.
-                gr.Markdown(
-                    "All three methods check the answer. Only the AI judge "
-                    "explains what it found, so the verdict comes from it.",
-                    elem_id="result-caption",
-                )
-                # Markdown rather than a Textbox: the verdict is prose to be read,
-                # not a value to be edited.
-                with gr.Column(elem_id="result-body"):
-                    verdict_box = gr.Markdown(elem_id="verdict-panel")
-                    breakdown_box = gr.Markdown(breakdown_table(), elem_id="breakdown-panel")
+        with gr.Tab("How the methods compare"):
+            # Two columns rather than one long page. Stacked, this tab ran to
+            # 1,531px and set its prose across the full 1,440 — about 180
+            # characters a line, where a reader loses the start of the next
+            # one. Side by side, the text gets a readable measure and the whole
+            # tab fits a screen.
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=45, elem_id="compare-text"):
+                    gr.Markdown(benchmark_table(), elem_id="benchmark-table")
+                    gr.Markdown(BENCHMARK_INTRO)
+                    gr.Markdown(CASCADE_TEXT)
 
-    # The wiring Interface used to do for us: on click, call check() with the
-    # contents of these two boxes and spread its two return values across the
-    # verdict and the breakdown. Outputs are matched by position, not by name.
-    check_button.click(
-        fn=check,
-        inputs=[source_box, response_box],
-        outputs=[verdict_box, breakdown_box, source_box, response_box],
-    )
-
-    # A result is only true of the inputs it was computed from. The moment either
-    # one changes — including when clicking an example fills them — the panel is
-    # cleared, so the screen can never show a new document beside an old verdict.
-    # This is why the button stays: running on every keystroke would spend quota
-    # on half-pasted text and give the visitor no say in sending their document
-    # to an outside service.
-    # The two fields are outputs as well as inputs here, but only ever receive a
-    # class update — no value is sent back, so what is being typed is untouched.
-    for box in (source_box, response_box):
-        box.change(fn=clear_result,
-                   inputs=[source_box, response_box],
-                   outputs=[verdict_box, breakdown_box, length_line,
-                            source_box, response_box])
-
-    # Examples must be created explicitly now, and told which components they
-    # fill. One is a benchmark answer written to contain an error, the other a
-    # real model answer that holds up; both are documented, with their sources
-    # and licences, in examples.py.
-
-    gr.Examples(
-        examples=EXAMPLES,
-        inputs=[source_box, response_box],
-        example_labels=EXAMPLE_LABELS,
-    )
+                # The charts are files in the repository rather than drawings
+                # made here: the same two images go into the deck and the
+                # README, and three renderings of one measurement would drift.
+                with gr.Column(scale=55, elem_id="compare-charts"):
+                    gr.Image("charts/methods.png", show_label=False,
+                             container=False, show_download_button=False,
+                             interactive=False, elem_id="methods-chart")
+                    gr.Image("charts/tradeoff.png", show_label=False,
+                             container=False, show_download_button=False,
+                             interactive=False, elem_id="tradeoff-chart")
+        
 
 
 # SSR is on by default and shuts the app down immediately on Spaces — a known

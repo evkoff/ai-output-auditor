@@ -77,9 +77,10 @@ VERDICT_WORDING = {
 # the wrong design even if it could.
 ACCURACY = {"embeddings": 0.357, "entailment": 0.640, "judge": 0.817}
 BENCHMARK = {
-    "Text similarity": (0.357, 0.235, 0.127, 0.165),
-    "Entailment": (0.640, 0.750, 0.420, 0.538),
-    "AI judge": (0.817, 0.832, 0.793, 0.812),
+    "Text similarity<br>embeddings<br>all-MiniLM-L6-v2":
+        (0.357, 0.235, 0.127, 0.165),
+    "Entailment<br>HHEM-2.1-Open": (0.640, 0.750, 0.420, 0.538),
+    "AI judge<br>gpt-oss-120b": (0.817, 0.832, 0.793, 0.812),
 }
 
 # "grounded" and "hallucinated" are our internal words. On screen a visitor
@@ -228,25 +229,34 @@ def breakdown_table(embedding=None, entailment_result=None, judge=None,
 BENCHMARK_INTRO = """### Where these numbers come from
 
 All three methods were measured on **HaluEval**, a public set in which people
-read an AI's answer beside its source and marked whether it was faithful. 150
-records were used, each supplying one faithful answer and one hallucinated, so
-every method was scored on the same **300 answers**.
+marked whether an AI's answer was faithful to its source. 150 records gave one
+faithful answer and one hallucinated each — the same **300 answers** for every
+method.
 
-**Accuracy** is how often a method agreed with the human. **Recall** is the
-share of real errors it caught — the number this product lives on, since an
-error that reaches you unflagged is the failure it exists to prevent.
-**Precision** is how often an alarm was a real error, and **F1** balances the
-two."""
+**Accuracy** counts every kind of mistake together. **Recall** is the share of
+real errors a method found, and it matters most here: an error that reaches you
+unflagged is what this product exists to prevent. **Precision** is how often an
+alarm was real, and **F1** combines the two."""
+
+METHODS_CHART_NOTE = """A weaker method is not simply wrong more often. It
+fails in one direction: text similarity is right about 36% of answers and finds
+only 13% of the errors. Entailment rarely raises a false alarm — three out of
+four answers it flags really are wrong — but it stays silent on more than half
+of them."""
 
 CASCADE_TEXT = """### Could a cheap method do the work instead?
 
-Only where it is already certain. Sending the judge only the answers the cheap
-check scores above a cut-off reproduces its accuracy exactly while calling it on
-82% of them — the 18% skipped are answers the cheap check reads as errors, and
-it is right about those as often as the judge is.
+Only where it is already sure. Entailment (HHEM-2.1-Open) scores every answer
+from 0 to 1, and a very low score — under 0.2 — means it has already found the
+problem. On those answers the AI judge (gpt-oss-120b) is right exactly as
+often, so asking it changes nothing.
 
-Past that, accuracy is sold rather than saved: halving the bill costs ten points
-of accuracy and nineteen of recall."""
+So the cheap method answers the ones it is sure about and the AI judge reads
+the rest: 82% of answers, the same accuracy as sending it everything, and 18%
+less cost.
+
+Spending less is free only up to a point: removing the last fifth of the cost
+changes nothing, and paying half as much costs ten points of accuracy."""
 
 
 def benchmark_table() -> str:
@@ -578,28 +588,45 @@ main.app.fillable { padding-top: 10px !important; }
 
 /* The charts are drawn at 1650px wide for a projector. Left at that size they
    fill the screen one at a time; at 520 both sit beside the text about them. */
-#methods-chart img, #tradeoff-chart img { max-width: 520px; }
+#methods-chart img, #tradeoff-chart img { max-width: 430px; }
+
+/* Gradio centres an image inside its block. Beside a column of text that
+   starts at the edge, a centred chart reads as indented by accident — and the
+   lower chart sits under the table it belongs to, where the two left edges
+   have to agree. The centring lives on the button Gradio wraps the image in,
+   not on the block: a rule on the block changed nothing. */
+#methods-chart button, #tradeoff-chart button { justify-content: flex-start; }
 
 /* The second tab arrived using the browser's default sizes, two steps larger
-   than anything on the first tab. It takes the same scale: 13px for prose,
-   11px for the table, and a heading one step up rather than three. */
-#compare-text .md.prose {
+   than anything on the first tab. It takes the same scale: 11px for prose and
+   for the table, and a heading one step up rather than three. This column is
+   explanation, the same role the 11px hints play on the first tab, so it reads
+   at the same size rather than introducing a step of its own. At 13px it also
+   ran to within 17px of the bottom of a 770px window; at 11px it stops 126px
+   short. */
+#compare-text .md.prose,
+#compare-cascade .md.prose,
+#compare-chart-top .md.prose {
   /* Gradio renders this as a span, and a max-width on an inline element does
      nothing at all — the rule below looked correct and changed no pixel. */
   display: block;
-  font-size: 13px;
+  font-size: 11px;
   line-height: 1.5;
-  /* A column of 612px runs to about 97 characters a line; 460 brings it to 73,
-     inside the 45-75 a reader holds comfortably. The height this costs is free
-     — the charts opposite are the taller column either way. */
-  max-width: 460px;
+  /* The measure is held at 67 characters, inside the 45-75 a reader holds
+     comfortably: the column is wider than that, so the cap does the work, and
+     it moves with the font size — 460 at 13px, 389 at 11px. */
+  max-width: 389px;
 }
-#compare-text .md.prose h3 { font-size: 15px; font-weight: 700; margin: 0 0 6px 0; }
-#compare-text .md.prose p { margin: 0 0 10px 0; }
+#compare-text .md.prose h3,
+#compare-cascade .md.prose h3 { font-size: 15px; font-weight: 700; margin: 0 0 6px 0; }
+#compare-text .md.prose p,
+#compare-cascade .md.prose p,
+#compare-chart-top .md.prose p { margin: 6px 0 10px 0; }
 
 /* Dark is what a reader must read — the verdict, their own pasted text. Text
    that explains is grey, on both tabs, so the rule holds wherever it appears. */
-#compare-text .md.prose p, #intro-line .md.prose p {
+#compare-text .md.prose p, #compare-cascade .md.prose p,
+#compare-chart-top .md.prose p, #intro-line .md.prose p {
   color: var(--block-info-text-color);
 }
 /* Every 11px element in this app is grey; this table arrived near-black and
@@ -685,6 +712,11 @@ main.app.fillable { padding-top: 10px !important; }
    fixed panel beside a column of inputs, and the padding was costing it both
    the height it needed and the width that stopped it wrapping. */
 #breakdown-panel td, #breakdown-panel th { padding: 4px 6px; }
+
+/* The same reasoning one tab over: this table sets the height of the top row
+   of the grid, and Gradio's 9px of vertical cell padding was four rows of it.
+   The horizontal 13px stays — columns of numbers need the air. */
+#benchmark-table td, #benchmark-table th { padding: 5px 13px; }
 
 /* The outline was being drawn twice — once by the table and once by the cells
    along its edge — and with collapsed borders the two land a fraction of a
@@ -830,8 +862,9 @@ with gr.Blocks(
                         gr.Markdown("Audit verdict", elem_id="result-label")
                         # Static: true of every check, so it does not wait for one.
                         gr.Markdown(
-                            "All three methods check the answer. Only the AI judge "
-                            "explains what it found, so the verdict comes from it.",
+                            "All three methods check the answer.<br>Only the AI "
+                            "judge explains what it found, so the verdict comes "
+                            "from it.",
                             elem_id="result-caption",
                         )
                         # Markdown rather than a Textbox: the verdict is prose to be read,
@@ -875,27 +908,37 @@ with gr.Blocks(
             )
 
         with gr.Tab("How the methods compare"):
-            # Two columns rather than one long page. Stacked, this tab ran to
-            # 1,531px and set its prose across the full 1,440 — about 180
-            # characters a line, where a reader loses the start of the next
-            # one. Side by side, the text gets a readable measure and the whole
-            # tab fits a screen.
+            # A 2x2 grid rather than two tall columns. Stacked in one page
+            # this tab ran to 1,531px and set its prose across the full 1,440 —
+            # about 180 characters a line, where a reader loses the start of
+            # the next one. In two columns the charts ended up in a stack of
+            # their own, far from the sentences that read them. Here each chart
+            # sits beside its own text and the sides alternate, so the eye
+            # crosses the page once per row instead of running down one column
+            # and back up the other.
+            #
+            # The charts are files in the repository rather than drawings made
+            # here: the same two images go into the deck and the README, and
+            # three renderings of one measurement would drift.
             with gr.Row(equal_height=False):
                 with gr.Column(scale=45, elem_id="compare-text"):
                     gr.Markdown(benchmark_table(), elem_id="benchmark-table")
                     gr.Markdown(BENCHMARK_INTRO)
-                    gr.Markdown(CASCADE_TEXT)
 
-                # The charts are files in the repository rather than drawings
-                # made here: the same two images go into the deck and the
-                # README, and three renderings of one measurement would drift.
-                with gr.Column(scale=55, elem_id="compare-charts"):
+                with gr.Column(scale=55, elem_id="compare-chart-top"):
                     gr.Image("charts/methods.png", show_label=False,
                              container=False, show_download_button=False,
                              interactive=False, elem_id="methods-chart")
+                    gr.Markdown(METHODS_CHART_NOTE)
+
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=45, elem_id="compare-chart-bottom"):
                     gr.Image("charts/tradeoff.png", show_label=False,
                              container=False, show_download_button=False,
                              interactive=False, elem_id="tradeoff-chart")
+
+                with gr.Column(scale=55, elem_id="compare-cascade"):
+                    gr.Markdown(CASCADE_TEXT)
         
 
 

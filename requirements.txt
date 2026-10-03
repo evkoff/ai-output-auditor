@@ -12,7 +12,6 @@ python-dotenv
 # UI
 gradio>=4.44
 
-# Data, metrics, charts
-pandas
-scikit-learn
+# Charts. Metrics are computed in src/metrics.py without a library, so the
+# positive class is named once instead of passed as a parameter.
 matplotlib

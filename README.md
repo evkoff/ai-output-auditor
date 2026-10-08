@@ -7,6 +7,8 @@ supported — and says what it considers unsupported.
 
 **[→ Try it](https://huggingface.co/spaces/Evkoff/ai-output-auditor)** · free, no account needed
 
+**[→ Watch the walkthrough](https://www.loom.com/share/dc69a162c541438dadc17110303243c2)** · four minutes: the product, the numbers and the code
+
 ---
 
 ## The finding
@@ -180,6 +182,7 @@ says so.
 | `src/cache.py` · `src/metrics.py` | Result storage; accuracy, precision, recall, F1 |
 | `run_eval.py` · `analyze.py` · `cascade.py` · `charts.py` | Evaluation and analysis |
 | `examples.py` | Two worked examples shown in the interface |
+| `presentation.pptx` | The Demo Day deck. The walkthrough video is linked at the top |
 
 ---
 
@@ -193,5 +196,5 @@ once a skipped answer can still carry an explanation.
 
 ---
 
-Capstone project for the Developers Institute GenAI bootcamp, 2026.
+Capstone project for the Developers Institute GenAI / ML bootcamp, 2026.
 Built by [Evgeniya Kolesnikov](https://www.linkedin.com/in/evgeniya-kolesnikova/).
